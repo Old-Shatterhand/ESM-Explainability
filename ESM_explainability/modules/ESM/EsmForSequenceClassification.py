@@ -12,7 +12,7 @@ import torch
 from ESM_explainability.modules.model_utils import PaddedSequence
 
 
-class EsmClassificationHead(nn.Module, RelProp):
+class EsmClassificationHead(nn.Module):
     """Head for sentence-level classification tasks."""
 
     def __init__(self, config):
