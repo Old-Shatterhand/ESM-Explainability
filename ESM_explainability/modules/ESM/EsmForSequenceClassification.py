@@ -30,7 +30,7 @@ class EsmClassificationHead(nn.Module):
         x = self.out_proj(x)
         return x
 
-    def rel_prop(self, cam, **kwargs):
+    def relprop(self, cam, **kwargs):
         cam = self.out_proj.relprop(cam, **kwargs)
         cam = self.dropout.relprop(cam, **kwargs)
         # TODO tanh relprop
