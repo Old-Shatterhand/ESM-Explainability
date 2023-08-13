@@ -44,18 +44,12 @@ class ESMEmbeddings(nn.Module):
         super().__init__()
         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        # self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size) ???
-
-        # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
-        # any TensorFlow checkpoint file
-        # self.LayerNorm = LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = Dropout(config.hidden_dropout_prob)
 
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
         self.register_buffer("position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)))
 
-        self.add1 = Add()
-        self.add2 = Add()
+        self.add = Add()
 
     def forward(
             self,
@@ -74,29 +68,17 @@ class ESMEmbeddings(nn.Module):
         if position_ids is None:
             position_ids = self.position_ids[:, :seq_length]
 
-        # if token_type_ids is None: ???
-        #     token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=self.position_ids.device) ???
-
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
         position_embeddings = self.position_embeddings(position_ids)
-        # token_type_embeddings = self.token_type_embeddings(token_type_ids) ???
 
-        # embeddings = inputs_embeds + position_embeddings + token_type_embeddings
-        # embeddings = self.add1([token_type_embeddings, position_embeddings]) ???
-        # embeddings = self.add1([position_embeddings]) ???
-        embeddings = self.add2([position_embeddings, inputs_embeds])
-        embeddings = self.LayerNorm(embeddings)
+        embeddings = self.add([position_embeddings, inputs_embeds])
         embeddings = self.dropout(embeddings)
         return embeddings
 
     def relprop(self, cam, **kwargs):
         cam = self.dropout.relprop(cam, **kwargs)
-        cam = self.LayerNorm.relprop(cam, **kwargs)
-
-        # [inputs_embeds, position_embeddings] , token_type_embeddings] ???
-        (cam) = self.add2.relprop(cam, **kwargs)
-
+        cam = self.add.relprop(cam, **kwargs)
         return cam
 
 
@@ -105,7 +87,7 @@ class ESMEncoder(nn.Module):
         super().__init__()
         self.config = config
         self.layer = nn.ModuleList([EsmLayer(config) for _ in range(config.num_hidden_layers)])
-        self.emb_layer_norm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.emb_layer_norm_after = LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
     def forward(
             self,
@@ -164,6 +146,7 @@ class ESMEncoder(nn.Module):
         )
 
     def relprop(self, cam, **kwargs):
+        cam = self.emb_layer_norm_after.relprop(cam, **kwargs)
         # assuming output_hidden_states is False
         for layer_module in reversed(self.layer):
             cam = layer_module.relprop(cam, **kwargs)
@@ -171,6 +154,7 @@ class ESMEncoder(nn.Module):
 
 
 # not adding relprop since this is only pooling at the end of the network, does not impact tokens importance
+# TODO: not checked for relprop correctness
 class ESMPooler(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -253,13 +237,13 @@ class EsmAttention(nn.Module):
         return outputs
 
     def relprop(self, cam, **kwargs):
-        # assuming that we don't ouput the attentions (outputs = (attention_output,)), self_outputs=(context_layer,)
-        (cam1, cam2) = self.output.relprop(cam, **kwargs)
+        # assuming that we don't output the attentions (outputs = (attention_output,)), self_outputs=(context_layer,)
+        cam, cam2 = self.output.relprop(cam, **kwargs)
         # print(cam1.sum(), cam2.sum(), (cam1 + cam2).sum())
-        cam1 = self.self.relprop(cam1, **kwargs)
+        cam = self.self.relprop(cam, **kwargs)
         # print(cam1.sum(), cam2.sum(), (cam1 + cam2).sum())
 
-        return self.clone.relprop((cam1, cam2), **kwargs)
+        return self.LayerNorm.relprop(cam, **kwargs)
 
 
 class EsmSelfAttention(nn.Module):
@@ -435,18 +419,18 @@ class EsmSelfOutput(nn.Module):
     def forward(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        add = self.add([hidden_states, input_tensor])
-        hidden_states = self.LayerNorm(add)
+        hidden_states = self.add([hidden_states, input_tensor])
+        # hidden_states = self.LayerNorm(add)
         return hidden_states
 
     def relprop(self, cam, **kwargs):
-        cam = self.LayerNorm.relprop(cam, **kwargs)
+        # cam = self.LayerNorm.relprop(cam, **kwargs)
         # [hidden_states, input_tensor]
         (cam1, cam2) = self.add.relprop(cam, **kwargs)
         cam1 = self.dropout.relprop(cam1, **kwargs)
         cam1 = self.dense.relprop(cam1, **kwargs)
 
-        return (cam1, cam2)
+        return cam1, cam2
 
 
 class EsmIntermediate(nn.Module):
@@ -474,16 +458,17 @@ class EsmOutput(nn.Module):
         super().__init__()
         self.dense = Linear(config.intermediate_size, config.hidden_size)
         self.dropout = Dropout(config.hidden_dropout_prob)
+        self.add = Add()
 
     def forward(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        hidden_states += input_tensor
+        hidden_states = self.add([hidden_states, input_tensor])
         return hidden_states
 
     def relprop(self, cam, **kwargs):
         # print("in", cam.sum())
-        cam = self.LayerNorm.relprop(cam, **kwargs)
+        # cam = self.LayerNorm.relprop(cam, **kwargs)
         # print(cam.sum())
         # [hidden_states, input_tensor]
         (cam1, cam2) = self.add.relprop(cam, **kwargs)
@@ -494,7 +479,7 @@ class EsmOutput(nn.Module):
         # print("dense", cam1.sum())
 
         # print("out", cam1.sum() + cam2.sum(), cam1.sum(), cam2.sum())
-        return (cam1, cam2)
+        return cam1, cam2
 
 
 class EsmLayer(nn.Module):
@@ -504,32 +489,7 @@ class EsmLayer(nn.Module):
         self.intermediate = EsmIntermediate(config)
         self.output = EsmOutput(config)
         self.clone = Clone()
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-
-    """
-    def forward(
-            self,
-            hidden_states,
-            attention_mask=None,
-            head_mask=None,
-            output_attentions=False,
-    ):
-        self_attention_outputs = self.attention(
-            hidden_states,
-            attention_mask,
-            head_mask,
-            output_attentions=output_attentions,
-        )
-        attention_output = self_attention_outputs[0]
-        outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
-
-        ao1, ao2 = self.clone(attention_output, 2)
-        intermediate_output = self.intermediate(ao1)
-        layer_output = self.output(intermediate_output, ao2)
-
-        outputs = (layer_output,) + outputs
-        return outputs
-    """
+        self.LayerNorm = LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
     def forward(
         self,
@@ -556,11 +516,11 @@ class EsmLayer(nn.Module):
         return outputs
 
     def relprop(self, cam, **kwargs):
-        (cam1, cam2) = self.output.relprop(cam, **kwargs)
+        cam, cam2 = self.output.relprop(cam, **kwargs)
         # print("output", cam1.sum(), cam2.sum(), cam1.sum() + cam2.sum())
-        cam1 = self.intermediate.relprop(cam1, **kwargs)
+        cam = self.intermediate.relprop(cam, **kwargs)
         # print("intermediate", cam1.sum())
-        cam = self.clone.relprop((cam1, cam2), **kwargs)
+        cam = self.LayerNorm.relprop(cam, **kwargs)
         # print("clone", cam.sum())
         cam = self.attention.relprop(cam, **kwargs)
         # print("attention", cam.sum())
@@ -683,7 +643,7 @@ class EsmModel(EsmPreTrainedModel):
         )
 
     def relprop(self, cam, **kwargs):
-        cam = self.pooler.relprop(cam, **kwargs)
+        # cam = self.pooler.relprop(cam, **kwargs)
         # print("111111111111",cam.sum())
         cam = self.encoder.relprop(cam, **kwargs)
         # print("222222222222222", cam.sum())
