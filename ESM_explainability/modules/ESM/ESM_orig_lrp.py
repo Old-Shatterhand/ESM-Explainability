@@ -44,7 +44,7 @@ class EsmEmbeddings(nn.Module):
         super().__init__()
         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
+        # self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size) ???
 
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
@@ -57,7 +57,13 @@ class EsmEmbeddings(nn.Module):
         self.add1 = Add()
         self.add2 = Add()
 
-    def forward(self, input_ids=None, token_type_ids=None, position_ids=None, inputs_embeds=None):
+    def forward(
+            self,
+            input_ids=None,
+            # token_type_ids=None, ???
+            position_ids=None,
+            inputs_embeds=None
+    ):
         if input_ids is not None:
             input_shape = input_ids.size()
         else:
@@ -68,16 +74,17 @@ class EsmEmbeddings(nn.Module):
         if position_ids is None:
             position_ids = self.position_ids[:, :seq_length]
 
-        if token_type_ids is None:
-            token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=self.position_ids.device)
+        # if token_type_ids is None: ???
+        #     token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=self.position_ids.device) ???
 
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
         position_embeddings = self.position_embeddings(position_ids)
-        token_type_embeddings = self.token_type_embeddings(token_type_ids)
+        # token_type_embeddings = self.token_type_embeddings(token_type_ids) ???
 
         # embeddings = inputs_embeds + position_embeddings + token_type_embeddings
-        embeddings = self.add1([token_type_embeddings, position_embeddings])
+        # embeddings = self.add1([token_type_embeddings, position_embeddings]) ???
+        embeddings = self.add1([position_embeddings])
         embeddings = self.add2([embeddings, inputs_embeds])
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
@@ -553,7 +560,7 @@ class EsmModel(EsmPreTrainedModel):
             self,
             input_ids=None,
             attention_mask=None,
-            token_type_ids=None,
+            # token_type_ids=None,
             position_ids=None,
             head_mask=None,
             inputs_embeds=None,
@@ -592,8 +599,8 @@ class EsmModel(EsmPreTrainedModel):
 
         if attention_mask is None:
             attention_mask = torch.ones(input_shape, device=device)
-        if token_type_ids is None:
-            token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
+        # if token_type_ids is None: ???
+        #     token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
 
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
@@ -618,7 +625,10 @@ class EsmModel(EsmPreTrainedModel):
         head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
 
         embedding_output = self.embeddings(
-            input_ids=input_ids, position_ids=position_ids, token_type_ids=token_type_ids, inputs_embeds=inputs_embeds
+            input_ids=input_ids,
+            position_ids=position_ids,
+            # token_type_ids=token_type_ids, ???
+            inputs_embeds=inputs_embeds
         )
 
         encoder_outputs = self.encoder(
