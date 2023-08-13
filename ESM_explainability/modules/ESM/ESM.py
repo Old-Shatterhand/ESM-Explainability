@@ -630,22 +630,17 @@ class EsmModel(EsmPreTrainedModel):
             return_dict=return_dict,
         )
         sequence_output = encoder_outputs[0]
-        pooled_output = self.pooler(sequence_output)
+        # pooled_output = self.pooler(sequence_output)
 
         if not return_dict:
-            return (sequence_output, pooled_output) + encoder_outputs[1:]
+            return (sequence_output, ) + encoder_outputs[1:]
 
         return BaseModelOutputWithPooling(
             last_hidden_state=sequence_output,
-            pooler_output=pooled_output,
+            # pooler_output=pooled_output,
             hidden_states=encoder_outputs.hidden_states,
             attentions=encoder_outputs.attentions,
         )
 
     def relprop(self, cam, **kwargs):
-        # cam = self.pooler.relprop(cam, **kwargs)
-        # print("111111111111",cam.sum())
-        cam = self.encoder.relprop(cam, **kwargs)
-        # print("222222222222222", cam.sum())
-        # print("conservation: ", cam.sum())
-        return cam
+        return self.encoder.relprop(cam, **kwargs)
