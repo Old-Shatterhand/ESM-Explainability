@@ -2,17 +2,12 @@ from __future__ import absolute_import
 
 import torch
 from torch import nn
-import torch.nn.functional as F
 import math
-from transformers import BertConfig
+from transformers import EsmPreTrainedModel
 from transformers.modeling_outputs import BaseModelOutputWithPooling, BaseModelOutput
 from transformers.pytorch_utils import find_pruneable_heads_and_indices, prune_linear_layer
 
-from ESM_explainability.modules.layers_lrp import *
-from transformers import (
-    BertPreTrainedModel,
-    PreTrainedModel,
-)
+from ESM_explainability.modules.layers_ours import *
 
 ACT2FN = {
     "relu": ReLU,
@@ -42,7 +37,7 @@ def compute_rollout_attention(all_layer_matrices, start_layer=0):
     return joint_attention
 
 
-class BertEmbeddings(nn.Module):
+class ESMEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings."""
 
     def __init__(self, config):
@@ -98,11 +93,11 @@ class BertEmbeddings(nn.Module):
         return cam
 
 
-class BertEncoder(nn.Module):
+class ESMEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.layer = nn.ModuleList([BertLayer(config) for _ in range(config.num_hidden_layers)])
+        self.layer = nn.ModuleList([EsmLayer(config) for _ in range(config.num_hidden_layers)])
 
     def forward(
             self,
@@ -165,7 +160,7 @@ class BertEncoder(nn.Module):
 
 
 # not adding relprop since this is only pooling at the end of the network, does not impact tokens importance
-class BertPooler(nn.Module):
+class ESMPooler(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.dense = Linear(config.hidden_size, config.hidden_size)
@@ -196,11 +191,11 @@ class BertPooler(nn.Module):
         return cam
 
 
-class BertAttention(nn.Module):
+class EsmAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.self = BertSelfAttention(config)
-        self.output = BertSelfOutput(config)
+        self.self = EsmSelfAttention(config)
+        self.output = EsmSelfOutput(config)
         self.pruned_heads = set()
         self.clone = Clone()
 
@@ -254,7 +249,7 @@ class BertAttention(nn.Module):
         return self.clone.relprop((cam1, cam2), **kwargs)
 
 
-class BertSelfAttention(nn.Module):
+class EsmSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         if config.hidden_size % config.num_attention_heads != 0 and not hasattr(config, "embedding_size"):
@@ -346,7 +341,7 @@ class BertSelfAttention(nn.Module):
         attention_scores = self.matmul1([query_layer, key_layer.transpose(-1, -2)])
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
         if attention_mask is not None:
-            # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
+            # Apply the attention mask is (precomputed for all layers in EsmModel forward() function)
             attention_scores = self.add([attention_scores, attention_mask])
 
         # Normalize the attention scores to probabilities.
@@ -416,7 +411,7 @@ class BertSelfAttention(nn.Module):
         return cam
 
 
-class BertSelfOutput(nn.Module):
+class EsmSelfOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.dense = Linear(config.hidden_size, config.hidden_size)
@@ -441,7 +436,7 @@ class BertSelfOutput(nn.Module):
         return (cam1, cam2)
 
 
-class BertIntermediate(nn.Module):
+class EsmIntermediate(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.dense = Linear(config.hidden_size, config.intermediate_size)
@@ -463,7 +458,7 @@ class BertIntermediate(nn.Module):
         return cam
 
 
-class BertOutput(nn.Module):
+class EsmOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.dense = Linear(config.intermediate_size, config.hidden_size)
@@ -494,12 +489,12 @@ class BertOutput(nn.Module):
         return (cam1, cam2)
 
 
-class BertLayer(nn.Module):
+class EsmLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.attention = BertAttention(config)
-        self.intermediate = BertIntermediate(config)
-        self.output = BertOutput(config)
+        self.attention = EsmAttention(config)
+        self.intermediate = EsmIntermediate(config)
+        self.output = EsmOutput(config)
         self.clone = Clone()
 
     def forward(
@@ -537,14 +532,14 @@ class BertLayer(nn.Module):
         return cam
 
 
-class BertModel(BertPreTrainedModel):
+class EsmModel(EsmPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.config = config
 
-        self.embeddings = BertEmbeddings(config)
-        self.encoder = BertEncoder(config)
-        self.pooler = BertPooler(config)
+        self.embeddings = ESMEmbeddings(config)
+        self.encoder = ESMEncoder(config)
+        self.pooler = ESMPooler(config)
 
         self.init_weights()
 
@@ -656,24 +651,3 @@ class BertModel(BertPreTrainedModel):
         # print("222222222222222", cam.sum())
         # print("conservation: ", cam.sum())
         return cam
-
-
-if __name__ == '__main__':
-    class Config:
-        def __init__(self, hidden_size, num_attention_heads, attention_probs_dropout_prob):
-            self.hidden_size = hidden_size
-            self.num_attention_heads = num_attention_heads
-            self.attention_probs_dropout_prob = attention_probs_dropout_prob
-
-
-    model = BertSelfAttention(Config(1024, 4, 0.1))
-    x = torch.rand(2, 20, 1024)
-    x.requires_grad_()
-
-    model.eval()
-
-    y = model.forward(x)
-
-    relprop = model.relprop(torch.rand(2, 20, 1024), (torch.rand(2, 20, 1024),))
-
-    print(relprop[1][0].shape)
