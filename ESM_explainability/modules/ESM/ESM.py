@@ -48,7 +48,7 @@ class ESMEmbeddings(nn.Module):
 
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
-        self.LayerNorm = LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        # self.LayerNorm = LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = Dropout(config.hidden_dropout_prob)
 
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
@@ -105,6 +105,7 @@ class ESMEncoder(nn.Module):
         super().__init__()
         self.config = config
         self.layer = nn.ModuleList([EsmLayer(config) for _ in range(config.num_hidden_layers)])
+        self.emb_layer_norm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
     def forward(
             self,
@@ -149,6 +150,9 @@ class ESMEncoder(nn.Module):
             hidden_states = layer_outputs[0]
             if output_attentions:
                 all_attentions = all_attentions + (layer_outputs[1],)
+
+        if self.emb_layer_norm_after:
+            hidden_states = self.emb_layer_norm_after(hidden_states)
 
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
@@ -203,6 +207,7 @@ class EsmAttention(nn.Module):
         super().__init__()
         self.self = EsmSelfAttention(config)
         self.output = EsmSelfOutput(config)
+        self.LayerNorm = LayerNorm(config.hidden_size, eps=config.layer_norm_eps)  # ???
         self.pruned_heads = set()
         self.clone = Clone()
 
@@ -233,16 +238,17 @@ class EsmAttention(nn.Module):
             encoder_attention_mask=None,
             output_attentions=False,
     ):
-        h1, h2 = self.clone(hidden_states, 2)
+        # h1, h2 = self.clone(hidden_states, 2)
+        hidden_states_ln = self.LayerNorm(hidden_states)
         self_outputs = self.self(
-            h1,
+            hidden_states_ln,
             attention_mask,
             head_mask,
             encoder_hidden_states,
             encoder_attention_mask,
             output_attentions,
         )
-        attention_output = self.output(self_outputs[0], h2)
+        attention_output = self.output(self_outputs[0], hidden_states)
         outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them
         return outputs
 
@@ -422,7 +428,7 @@ class EsmSelfOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.dense = Linear(config.hidden_size, config.hidden_size)
-        self.LayerNorm = LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        # self.LayerNorm = LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = Dropout(config.hidden_dropout_prob)
         self.add = Add()
 
@@ -459,9 +465,7 @@ class EsmIntermediate(nn.Module):
 
     def relprop(self, cam, **kwargs):
         cam = self.intermediate_act_fn.relprop(cam, **kwargs)  # FIXME only ReLU
-        # print(cam.sum())
         cam = self.dense.relprop(cam, **kwargs)
-        # print(cam.sum())
         return cam
 
 
@@ -469,15 +473,12 @@ class EsmOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.dense = Linear(config.intermediate_size, config.hidden_size)
-        self.LayerNorm = LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = Dropout(config.hidden_dropout_prob)
-        self.add = Add()
 
     def forward(self, hidden_states, input_tensor):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        add = self.add([hidden_states, input_tensor])
-        hidden_states = self.LayerNorm(add)
+        hidden_states += input_tensor
         return hidden_states
 
     def relprop(self, cam, **kwargs):
@@ -503,7 +504,9 @@ class EsmLayer(nn.Module):
         self.intermediate = EsmIntermediate(config)
         self.output = EsmOutput(config)
         self.clone = Clone()
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
+    """
     def forward(
             self,
             hidden_states,
@@ -526,6 +529,31 @@ class EsmLayer(nn.Module):
 
         outputs = (layer_output,) + outputs
         return outputs
+    """
+
+    def forward(
+        self,
+        hidden_states,
+        attention_mask=None,
+        head_mask=None,
+        output_attentions=False,
+    ):
+        self_attention_outputs = self.attention(
+            hidden_states,
+            attention_mask,
+            head_mask,
+            output_attentions=output_attentions,
+        )
+        attention_output = self_attention_outputs[0]
+        outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
+
+        attention_output_ln = self.LayerNorm(attention_output)
+        intermediate_output = self.intermediate(attention_output_ln)
+        layer_output = self.output(intermediate_output, attention_output)
+
+        outputs = (layer_output,) + outputs
+
+        return outputs
 
     def relprop(self, cam, **kwargs):
         (cam1, cam2) = self.output.relprop(cam, **kwargs)
@@ -546,7 +574,7 @@ class EsmModel(EsmPreTrainedModel):
 
         self.embeddings = ESMEmbeddings(config)
         self.encoder = ESMEncoder(config)
-        self.pooler = ESMPooler(config)
+        # self.pooler = ESMPooler(config)
 
         self.init_weights()
 
