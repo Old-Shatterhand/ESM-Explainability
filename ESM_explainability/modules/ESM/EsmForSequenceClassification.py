@@ -65,7 +65,6 @@ class ESMForSequenceClassification(EsmPreTrainedModel):
         outputs = self.esm(
             input_ids,
             attention_mask=attention_mask,
-            # token_type_ids=token_type_ids, ???
             position_ids=position_ids,
             head_mask=head_mask,
             inputs_embeds=inputs_embeds,
@@ -74,10 +73,8 @@ class ESMForSequenceClassification(EsmPreTrainedModel):
             return_dict=return_dict,
         )
 
-        pooled_output = outputs[1]
-
-        pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(pooled_output)
+        output = self.dropout(outputs[0])
+        logits = self.classifier(output)
 
         loss = None
         if labels is not None:
