@@ -84,8 +84,8 @@ class ESMEmbeddings(nn.Module):
 
         # embeddings = inputs_embeds + position_embeddings + token_type_embeddings
         # embeddings = self.add1([token_type_embeddings, position_embeddings]) ???
-        embeddings = self.add1([position_embeddings])
-        embeddings = self.add2([embeddings, inputs_embeds])
+        # embeddings = self.add1([position_embeddings]) ???
+        embeddings = self.add2([position_embeddings, inputs_embeds])
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
         return embeddings
