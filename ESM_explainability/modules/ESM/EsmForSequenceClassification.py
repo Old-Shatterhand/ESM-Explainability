@@ -6,7 +6,8 @@ from torch.nn import CrossEntropyLoss, MSELoss
 import torch.nn as nn
 from typing import List, Any
 import torch
-from BERT_rationale_benchmark.models.model_utils import PaddedSequence
+
+from ESM_explainability.modules.model_utils import PaddedSequence
 
 
 class ESMForSequenceClassification(EsmPreTrainedModel):
