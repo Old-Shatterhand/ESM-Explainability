@@ -1,5 +1,7 @@
 from transformers.modeling_outputs import SequenceClassifierOutput
 from transformers.models.esm import EsmPreTrainedModel
+
+from ESM_explainability.modules.layers_lrp import RelProp
 from ESM_explainability.modules.layers_ours import *
 from ESM_explainability.modules.ESM.ESM import EsmModel
 from torch.nn import CrossEntropyLoss, MSELoss
@@ -10,23 +12,32 @@ import torch
 from ESM_explainability.modules.model_utils import PaddedSequence
 
 
-class EsmClassificationHead(nn.Module):
+class EsmClassificationHead(nn.Module, RelProp):
     """Head for sentence-level classification tasks."""
 
     def __init__(self, config):
         super().__init__()
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
+        self.dense = Linear(config.hidden_size, config.hidden_size)
+        self.dropout = Dropout(config.hidden_dropout_prob)
+        self.out_proj = Linear(config.hidden_size, config.num_labels)
 
     def forward(self, features, **kwargs):
-        x = features[:, 0, :]  # take <s> token (equiv. to [CLS])
+        x = features[:, 0, :]  # take <s> token (equiv. to [CLS]) What ???
         x = self.dropout(x)
         x = self.dense(x)
         x = torch.tanh(x)
         x = self.dropout(x)
         x = self.out_proj(x)
         return x
+
+    def rel_prop(self, cam, **kwargs):
+        cam = self.out_proj.relprop(cam, **kwargs)
+        cam = self.dropout.relprop(cam, **kwargs)
+        # TODO tanh relprop
+        cam = self.dense.relprop(cam, **kwargs)
+        cam = self.dropout.relprop(cam, **kwargs)
+        # TODO: selection relprop?
+        return cam
 
 
 class ESMForSequenceClassification(EsmPreTrainedModel):
