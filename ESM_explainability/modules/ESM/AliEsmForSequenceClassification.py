@@ -2,7 +2,7 @@ from transformers.modeling_outputs import SequenceClassifierOutput
 from transformers.models.esm import EsmPreTrainedModel
 
 from ESM_explainability.modules.layers_ours import *
-from ESM_explainability.modules.ESM.ESM import EsmModel
+from ESM_explainability.modules.ESM.AliESM import EsmModel
 from torch.nn import CrossEntropyLoss, MSELoss
 import torch.nn as nn
 from typing import List, Any

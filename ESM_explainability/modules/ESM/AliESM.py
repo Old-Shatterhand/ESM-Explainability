@@ -19,7 +19,7 @@ ACT2FN = {
     "gelu": GELU,
 }
 
-logger = logging.get_logger(__name__)
+# logger = logging.get_logger(__name__)
 
 
 def get_activation(activation_string):
@@ -56,7 +56,7 @@ class ESMEmbeddings(nn.Module):
             self.layer_norm = None
         self.dropout = Dropout(config.hidden_dropout_prob)
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
-        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
+        self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
         self.register_buffer("position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)))
         self.add = Add()
 
@@ -116,13 +116,61 @@ class ESMEmbeddings(nn.Module):
         return cam
 
 
+class RotaryEmbeddings(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        # Generate and save the inverse frequency buffer (non trainable)
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        inv_freq = inv_freq
+        self.register_buffer("inv_freq", inv_freq)
+
+        self._seq_len_cached = None
+        self._cos_cached = None
+        self._sin_cached = None
+
+    def _update_cos_sin_tables(self, x, seq_dimension=2):
+        seq_len = x.shape[seq_dimension]
+
+        # Reset the tables if the sequence length has changed,
+        # or if we're on a new device (possibly due to tracing for instance)
+        if seq_len != self._seq_len_cached or self._cos_cached.device != x.device:
+            self._seq_len_cached = seq_len
+            t = torch.arange(x.shape[seq_dimension], device=x.device).type_as(self.inv_freq)
+            freqs = torch.outer(t, self.inv_freq)
+            emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
+
+            self._cos_cached = emb.cos()[None, None, :, :]
+            self._sin_cached = emb.sin()[None, None, :, :]
+
+        return self._cos_cached, self._sin_cached
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor):
+        self._cos_cached, self._sin_cached = self._update_cos_sin_tables(k, seq_dimension=-2)  # k remains unchanged
+
+        return (
+            self.apply_rotary_pos_emb(q, self._cos_cached, self._sin_cached),
+            self.apply_rotary_pos_emb(k, self._cos_cached, self._sin_cached),
+        )
+
+    def apply_rotary_pos_emb(self, x, cos, sin):
+        cos = cos[:, :, : x.shape[-2], :]
+        sin = sin[:, :, : x.shape[-2], :]
+
+        return (x * cos) + (self.rotate_half(x) * sin)
+
+    @staticmethod
+    def rotate_half(x):
+        x1, x2 = x.chunk(2, dim=-1)
+        return torch.cat((-x2, x1), dim=-1)
+
+
 class EsmEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
         self.layer = nn.ModuleList([EsmLayer(config) for _ in range(config.num_hidden_layers)])
         self.emb_layer_norm_after = LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.gradient_checkpoint = False
+        self.gradient_checkpointing = False
 
     def forward(
             self,
@@ -139,7 +187,7 @@ class EsmEncoder(nn.Module):
     ):
         if self.gradient_checkpointing and self.training:
             if use_cache:
-                logger.warning_once(
+                print(
                     "`use_cache=True` is incompatible with `config.gradient_checkpointing=True`. Setting "
                     "`use_cache=False`..."
                 )
@@ -299,7 +347,7 @@ class EsmAttention(nn.Module):
 
 
 class EsmSelfAttention(nn.Module):
-    def __init__(self, config, position_embedding_type):
+    def __init__(self, config, position_embedding_type=None):
         super().__init__()
         if config.hidden_size % config.num_attention_heads != 0 and not hasattr(config, "embedding_size"):
             raise ValueError(
@@ -413,12 +461,15 @@ class EsmSelfAttention(nn.Module):
             value_layer = self.transpose_for_scores(self.value(h3))
 
         query_layer = self.transpose_for_scores(mixed_query_layer)
+        query_layer = query_layer * self.attention_head_size ** -0.5
 
         if self.is_decoder:
             past_key_value = (key_layer, value_layer)
 
+        if self.position_embedding_type == "rotary":
+            query_layer, key_layer = self.rotary_embeddings(query_layer, key_layer)
+
         # Take the dot product between "query" and "key" to get the raw attention scores.
-        query_layer = query_layer * self.attention_head_size ** -0.5
         attention_scores = self.matmul1([query_layer, key_layer.transpose(-1, -2)])
         # attention_scores = attention_scores / math.sqrt(self.attention_head_size)
 
@@ -432,8 +483,9 @@ class EsmSelfAttention(nn.Module):
         # Normalize the attention scores to probabilities.
         attention_probs = self.softmax(attention_scores)
 
-        self.save_attn(attention_probs)
-        attention_probs.register_hook(self.save_attn_gradients)
+        # ???
+        # self.save_attn(attention_probs)
+        # attention_probs.register_hook(self.save_attn_gradients)
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
@@ -486,6 +538,9 @@ class EsmSelfAttention(nn.Module):
         cam1_1 = self.transpose_for_scores_relprop(cam1_1)
         cam1_1 = self.query.relprop(cam1_1, **kwargs)
 
+        if self.position_embedding_type == "rotary":
+            cam1_2, cam_2 = self.rotary_embeddings.relprop((cam1_2, cam2), **kwargs)  # TODO: Implement relprop!
+
         if self.cases[0]:
             raise NotImplementedError
         elif self.cases[1]:
@@ -531,18 +586,15 @@ class EsmIntermediate(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.dense = Linear(config.hidden_size, config.intermediate_size)
-        # if isinstance(config.hidden_act, str):
-        #     self.intermediate_act_fn = ACT2FN[config.hidden_act]()
-        # else:
-        #     self.intermediate_act_fn = config.hidden_act
+        self.gelu = GELU()
 
     def forward(self, hidden_states):
         hidden_states = self.dense(hidden_states)
-        # hidden_states = self.intermediate_act_fn(hidden_states)
+        hidden_states = self.gelu(hidden_states)
         return hidden_states
 
     def relprop(self, cam, **kwargs):
-        # cam = self.intermediate_act_fn.relprop(cam, **kwargs)  # FIXME only ReLU
+        cam = self.gelu.relprop(cam, **kwargs)
         cam = self.dense.relprop(cam, **kwargs)
         return cam
 
@@ -788,7 +840,7 @@ class EsmModel(EsmPreTrainedModel):
             past_key_values=encoder_outputs.past_key_values,
             hidden_states=encoder_outputs.hidden_states,
             attentions=encoder_outputs.attentions,
-            cross_attentions=encoder_outputs.cross_attensions,
+            cross_attentions=encoder_outputs.cross_attentions,
         )
 
     def relprop(self, cam, **kwargs):
