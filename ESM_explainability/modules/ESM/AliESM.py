@@ -8,7 +8,7 @@ import math
 from transformers import EsmPreTrainedModel
 from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPoolingAndCrossAttentions, \
     BaseModelOutputWithPastAndCrossAttentions
-from transformers.models.esm.modeling_esm import create_position_ids_from_input_ids, RotaryEmbedding
+from transformers.models.esm.modeling_esm import create_position_ids_from_input_ids
 from transformers.pytorch_utils import find_pruneable_heads_and_indices, prune_linear_layer
 
 from ESM_explainability.modules.layers_ours import *
@@ -375,7 +375,7 @@ class EsmSelfAttention(nn.Module):
             self.max_position_embeddings = config.max_position_embeddings
             self.distance_embedding = nn.Embedding(2 * config.max_position_embeddings - 1, self.attention_head_size)
         elif self.position_embedding_type == "rotary":  # To be implemented
-            self.rotary_embeddings = RotaryEmbedding(dim=self.attention_head_size)
+            self.rotary_embeddings = RotaryEmbeddings(dim=self.attention_head_size)
 
         self.is_decoder = config.is_decoder
 
