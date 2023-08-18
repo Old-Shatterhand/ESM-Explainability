@@ -25,7 +25,7 @@ class Generator:
     def forward(self, input_ids, attention_mask):
         return self.model(input_ids, attention_mask)
 
-    def generate_LRP(self, input_ids, attention_mask,
+    def generate_LRP(self, input_ids, attention_mask, device,
                      index=None, start_layer=11):
         output = self.model(input_ids=input_ids, attention_mask=attention_mask)[0]
         kwargs = {"alpha": 1}
@@ -37,7 +37,7 @@ class Generator:
         one_hot[0, index] = 1
         one_hot_vector = one_hot
         one_hot = torch.from_numpy(one_hot).requires_grad_(True)
-        one_hot = torch.sum(one_hot.cuda() * output)
+        one_hot = torch.sum(one_hot.to(device) * output)
 
         self.model.zero_grad()
         one_hot.backward(retain_graph=True)
@@ -58,7 +58,7 @@ class Generator:
         rollout[:, 0, 0] = rollout[:, 0].min()
         return rollout[:, 0]
 
-    def generate_LRP_last_layer(self, input_ids, attention_mask,
+    def generate_LRP_last_layer(self, input_ids, attention_mask, device,
                                 index=None):
         output = self.model(input_ids=input_ids, attention_mask=attention_mask)[0]
         kwargs = {"alpha": 1}
@@ -69,7 +69,7 @@ class Generator:
         one_hot[0, index] = 1
         one_hot_vector = one_hot
         one_hot = torch.from_numpy(one_hot).requires_grad_(True)
-        one_hot = torch.sum(one_hot.cuda() * output)
+        one_hot = torch.sum(one_hot.to(device) * output)
 
         self.model.zero_grad()
         one_hot.backward(retain_graph=True)
@@ -81,7 +81,7 @@ class Generator:
         cam[:, 0, 0] = 0
         return cam[:, 0]
 
-    def generate_full_lrp(self, input_ids, attention_mask,
+    def generate_full_lrp(self, input_ids, attention_mask, device,
                           index=None):
         output = self.model(input_ids=input_ids, attention_mask=attention_mask)[0]
         kwargs = {"alpha": 1}
@@ -93,7 +93,7 @@ class Generator:
         one_hot[0, index] = 1
         one_hot_vector = one_hot
         one_hot = torch.from_numpy(one_hot).requires_grad_(True)
-        one_hot = torch.sum(one_hot.cuda() * output)
+        one_hot = torch.sum(one_hot.to(device) * output)
 
         self.model.zero_grad()
         one_hot.backward(retain_graph=True)
@@ -124,7 +124,7 @@ class Generator:
         rollout[:, 0, 0] = 0
         return rollout[:, 0]
 
-    def generate_attn_gradcam(self, input_ids, attention_mask, index=None):
+    def generate_attn_gradcam(self, input_ids, attention_mask, device, index=None):
         output = self.model(input_ids=input_ids, attention_mask=attention_mask)[0]
         kwargs = {"alpha": 1}
 
@@ -135,7 +135,7 @@ class Generator:
         one_hot[0, index] = 1
         one_hot_vector = one_hot
         one_hot = torch.from_numpy(one_hot).requires_grad_(True)
-        one_hot = torch.sum(one_hot.cuda() * output)
+        one_hot = torch.sum(one_hot.to(device) * output)
 
         self.model.zero_grad()
         one_hot.backward(retain_graph=True)

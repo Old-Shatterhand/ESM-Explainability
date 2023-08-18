@@ -486,9 +486,9 @@ class EsmSelfAttention(nn.Module):
         # Normalize the attention scores to probabilities.
         attention_probs = self.softmax(attention_scores)
 
-        # ???
-        # self.save_attn(attention_probs)
-        # attention_probs.register_hook(self.save_attn_gradients)
+        # For explanation generation
+        self.save_attn(attention_probs)
+        attention_probs.register_hook(self.save_attn_gradients)
 
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
