@@ -16,8 +16,8 @@ phases as also visualized below.
 
 3. Layer aggregation with rollout.
 
-<p align="center">
-  <img width="600" height="200" src="https://github.com/hila-chefer/Transformer-Explainability/blob/main/method-page-001.jpg">
+<p>
+  <img width="600" height="200" src="https://github.com/hila-chefer/Transformer-Explainability/blob/main/method-page-001.jpg" alt="Method visualization">
 </p>
 
 In order to make it work for ESM, we had to change some BERT specifics to ESM configurations.

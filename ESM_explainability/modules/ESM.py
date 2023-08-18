@@ -1,46 +1,14 @@
 from __future__ import absolute_import
 
-import logging
-
 import torch
 from torch import nn
-import math
 from transformers import EsmPreTrainedModel
-from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPoolingAndCrossAttentions, \
+from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions, \
     BaseModelOutputWithPastAndCrossAttentions
 from transformers.models.esm.modeling_esm import create_position_ids_from_input_ids
 from transformers.pytorch_utils import find_pruneable_heads_and_indices, prune_linear_layer
 
-from ESM_explainability.modules.layers_ours import *
-
-ACT2FN = {
-    "relu": ReLU,
-    "tanh": Tanh,
-    "gelu": GELU,
-}
-
-# logger = logging.get_logger(__name__)
-
-
-def get_activation(activation_string):
-    if activation_string in ACT2FN:
-        return ACT2FN[activation_string]
-    else:
-        raise KeyError("function {} not found in ACT2FN mapping {}".format(activation_string, list(ACT2FN.keys())))
-
-
-def compute_rollout_attention(all_layer_matrices, start_layer=0):
-    # adding residual consideration
-    num_tokens = all_layer_matrices[0].shape[1]
-    batch_size = all_layer_matrices[0].shape[0]
-    eye = torch.eye(num_tokens).expand(batch_size, num_tokens, num_tokens).to(all_layer_matrices[0].device)
-    all_layer_matrices = [all_layer_matrices[i] + eye for i in range(len(all_layer_matrices))]
-    all_layer_matrices = [all_layer_matrices[i] / all_layer_matrices[i].sum(dim=-1, keepdim=True)
-                          for i in range(len(all_layer_matrices))]
-    joint_attention = all_layer_matrices[start_layer]
-    for i in range(start_layer + 1, len(all_layer_matrices)):
-        joint_attention = all_layer_matrices[i].bmm(joint_attention)
-    return joint_attention
+from ESM_explainability.modules.utils import *
 
 
 class ESMEmbeddings(nn.Module):
@@ -55,7 +23,7 @@ class ESMEmbeddings(nn.Module):
         else:
             self.layer_norm = None
         self.dropout = Dropout(config.hidden_dropout_prob)
-        # position_ids (1, len position emb) is contiguous in memory and exported when serialized
+
         self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
         self.register_buffer("position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)))
         self.add = Add()
@@ -103,12 +71,9 @@ class ESMEmbeddings(nn.Module):
             embeddings = self.layer_norm(embeddings)
         if attention_mask is not None:
             embeddings = (embeddings * attention_mask.unsqueeze(-1)).to(embeddings.dtype)
-        # Matt: I think this line was copied incorrectly from BERT, disabling it for now.
-        # embeddings = self.dropout(embeddings)
         return embeddings
 
     def relprop(self, cam, **kwargs):
-        # cam = self.dropout.relprop(cam, **kwargs)  # see last forward-lines
         if self.layer_norm is not None:
             cam = self.layer_norm.relprop(cam, **kwargs)
         if self.position_embedding_type == "absolute":
@@ -119,7 +84,7 @@ class ESMEmbeddings(nn.Module):
 class RotaryEmbeddings(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
-        # Generate and save the inverse frequency buffer (non trainable)
+        # Generate and save the inverse frequency buffer (non-trainable)
         inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
         inv_freq = inv_freq
         self.register_buffer("inv_freq", inv_freq)
@@ -153,6 +118,7 @@ class RotaryEmbeddings(nn.Module):
         )
 
     def relprop(self, cam, **kwargs):
+        # TODO: To be implemented if necessary
         return cam
 
     def apply_rotary_pos_emb(self, x, cos, sin):
@@ -272,8 +238,6 @@ class EsmEncoder(nn.Module):
         return cam
 
 
-# not adding relprop since this is only pooling at the end of the network, does not impact tokens importance
-# TODO: not checked for relprop correctness
 class ESMPooler(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -436,14 +400,10 @@ class EsmSelfAttention(nn.Module):
         h1, h2, h3 = self.clone(hidden_states, 3)
         mixed_query_layer = self.query(h1)
 
-        # If this is instantiated as a cross-attention module, the keys
-        # and values come from an encoder; the attention mask needs to be
-        # such that the encoder's padding tokens are not attended to.
         is_cross_attention = encoder_hidden_states is not None
 
         if is_cross_attention and past_key_value is not None:
             self.cases[0] = True
-            # reuse k,v, cross_attentions
             key_layer = past_key_value[0]
             value_layer = past_key_value[1]
             attention_mask = encoder_attention_mask
@@ -472,9 +432,7 @@ class EsmSelfAttention(nn.Module):
         if self.position_embedding_type == "rotary":
             query_layer, key_layer = self.rotary_embeddings(query_layer, key_layer)
 
-        # Take the dot product between "query" and "key" to get the raw attention scores.
         attention_scores = self.matmul1([query_layer, key_layer.transpose(-1, -2)])
-        # attention_scores = attention_scores / math.sqrt(self.attention_head_size)
 
         if self.position_embedding_type == "relative_key" or self.position_embedding_type == "relative_key_query":
             raise NotImplementedError("This methodology is not implemented yet.")
@@ -750,16 +708,6 @@ class EsmModel(EsmPreTrainedModel):
             output_hidden_states=None,
             return_dict=None,
     ):
-        r"""
-        encoder_hidden_states  (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
-            Sequence of hidden-states at the output of the last layer of the encoder. Used in the cross-attention
-            if the model is configured as a decoder.
-        encoder_attention_mask (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length)`, `optional`):
-            Mask to avoid performing attention on the padding token indices of the encoder input. This mask
-            is used in the cross-attention if the model is configured as a decoder.
-            Mask values selected in ``[0, 1]``:
-            ``1`` for tokens that are NOT MASKED, ``0`` for MASKED tokens.
-        """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -789,12 +737,8 @@ class EsmModel(EsmPreTrainedModel):
         if attention_mask is None:
             attention_mask = torch.ones(input_shape, device=device)
 
-        # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
-        # ourselves in which case we just need to make it broadcastable to all heads.
         extended_attention_mask: torch.Tensor = self.get_extended_attention_mask(attention_mask, input_shape, device)
 
-        # If a 2D or 3D attention mask is provided for the cross-attention
-        # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
         if self.config.is_decoder and encoder_hidden_states is not None:
             encoder_batch_size, encoder_sequence_length, _ = encoder_hidden_states.size()
             encoder_hidden_shape = (encoder_batch_size, encoder_sequence_length)
@@ -804,11 +748,6 @@ class EsmModel(EsmPreTrainedModel):
         else:
             encoder_extended_attention_mask = None
 
-        # Prepare head mask if needed
-        # 1.0 in head_mask indicate we keep the head
-        # attention_probs has shape bsz x n_heads x N x N
-        # input head_mask has shape [num_heads] or [num_hidden_layers x num_heads]
-        # and head_mask is converted to shape [num_hidden_layers x batch x num_heads x seq_length x seq_length]
         head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
 
         embedding_output = self.embeddings(

@@ -1,17 +1,14 @@
 from transformers.modeling_outputs import SequenceClassifierOutput
 from transformers.models.esm import EsmPreTrainedModel
 
-from ESM_explainability.modules.layers_ours import *
-from ESM_explainability.modules.ESM.AliESM import EsmModel
+from ESM_explainability.modules.utils import *
+from ESM_explainability.modules.ESM import EsmModel
 from torch.nn import CrossEntropyLoss, MSELoss
 import torch.nn as nn
-from typing import List, Any
+from typing import List
 import torch
 
-from ESM_explainability.modules.model_utils import PaddedSequence
-
-
-# https://github.com/huggingface/transformers/blob/main/src/transformers/models/esm/modeling_esm.py#L87
+from ESM_explainability.modules.utils import PaddedSequence
 
 
 class FinetuneHeadModel(EsmPreTrainedModel):
@@ -69,7 +66,6 @@ class ESMForSequenceClassification(EsmPreTrainedModel):
         self.config = config
 
         self.esm = EsmModel(config)
-        # self.dropout = Dropout(config.hidden_dropout_prob)
         self.classifier = EsmClassificationHead(config)
 
         self.init_weights()
@@ -106,7 +102,6 @@ class ESMForSequenceClassification(EsmPreTrainedModel):
             return_dict=return_dict,
         )
 
-        # output = self.dropout(outputs[0])
         output = outputs[0]
         logits = self.classifier(output)
 
@@ -133,13 +128,10 @@ class ESMForSequenceClassification(EsmPreTrainedModel):
 
     def relprop(self, cam=None, **kwargs):
         cam = self.classifier.relprop(cam, **kwargs)
-        # cam = self.dropout.relprop(cam, **kwargs)
         cam = self.esm.relprop(cam, **kwargs)
-        # print("conservation: ", cam.sum())
         return cam
 
 
-# this is the actual classifier we will be using
 class EsmClassifier(nn.Module):
     """Thin wrapper around EsmForSequenceClassification"""
 
@@ -161,16 +153,12 @@ class EsmClassifier(nn.Module):
         self.sep_token_id = sep_token_id
         self.max_length = max_length
 
-    def forward(self,
-                query: List[torch.tensor],
-                docids: List[Any],
-                document_batch: List[torch.tensor]):
+    def forward(
+            self,
+            query: List[torch.tensor],
+            document_batch: List[torch.tensor]
+    ):
         assert len(query) == len(document_batch)
-        print(query)
-        # note about device management:
-        # since distributed training is enabled, the inputs to this module can be on *any* device
-        # (preferably cpu, since we wrap and unwrap the module) we want to keep these params on the input device
-        # (assuming CPU) for as long as possible for cheap memory access
         target_device = next(self.parameters()).device
         cls_token = torch.tensor([self.cls_token_id]).to(device=document_batch[0].device)
         sep_token = torch.tensor([self.sep_token_id]).to(device=document_batch[0].device)
@@ -181,16 +169,19 @@ class EsmClassifier(nn.Module):
                 d = d[:(self.max_length - len(q) - 2)]
             input_tensors.append(torch.cat([cls_token, q, sep_token, d]))
             position_ids.append(torch.tensor(list(range(0, len(q) + 1)) + list(range(0, len(d) + 1))))
-        esm_input = PaddedSequence.autopad(input_tensors, batch_first=True, padding_value=self.pad_token_id,
-                                           device=target_device)
+        esm_input = PaddedSequence.autopad(
+            input_tensors,
+            batch_first=True,
+            padding_value=self.pad_token_id,
+            device=target_device
+        )
         positions = PaddedSequence.autopad(position_ids, batch_first=True, padding_value=0, device=target_device)
-        (classes,) = self.esm(esm_input.data,
-                              attention_mask=esm_input.mask(on=0.0, off=float('-inf'), device=target_device),
-                              position_ids=positions.data)
+        (classes,) = self.esm(
+            esm_input.data,
+            attention_mask=esm_input.mask(on=0.0, off=float('-inf'), device=target_device),
+            position_ids=positions.data
+        )
         assert torch.all(classes == classes)  # for nans
-
-        print(input_tensors[0])
-        print(self.relprop()[0])
 
         return classes
 
