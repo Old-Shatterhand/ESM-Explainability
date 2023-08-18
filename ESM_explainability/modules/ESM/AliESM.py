@@ -152,6 +152,9 @@ class RotaryEmbeddings(nn.Module):
             self.apply_rotary_pos_emb(k, self._cos_cached, self._sin_cached),
         )
 
+    def relprop(self, cam, **kwargs):
+        return cam
+
     def apply_rotary_pos_emb(self, x, cos, sin):
         cos = cos[:, :, : x.shape[-2], :]
         sin = sin[:, :, : x.shape[-2], :]
